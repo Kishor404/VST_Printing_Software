@@ -45,6 +45,7 @@
    ===================================================== */
 .label-area {
     width: 100%;
+    min-height: 85vh;
     height: 85vh;
     background-color: var(--bg);
     background-image:
@@ -56,25 +57,35 @@
     gap: 24px;
     padding: 24px;
     font-family: var(--font);
+    overflow: hidden; /* Prevent the main layout/screen from ever scrolling */
 }
 
 /* =====================================================
-   LEFT SIDE
+   LEFT SIDE (PREVIEW AREA)
    ===================================================== */
 .label-area-left {
     display: flex;
     flex-direction: column;
     align-items: center;
-    justify-content: center;
+    justify-content: flex-start; /* Changed to flex-start to allow clean top-to-bottom internal scrolling */
     gap: 14px;
     position: sticky;
     top: 24px;
     width: calc(70% - 24px);
     height: 100%;
-    overflow: hidden;
+    overflow-y: auto; /* Explicitly makes ONLY the preview area internally scrollable */
+    overflow-x: hidden;
     background-color: rgb(254, 255, 236);
     border-radius: 20px;
+    min-width: 0;
+    padding: 24px 16px; /* Added vertical padding for scroll breathing room */
 }
+
+/* Left side custom scrollbar styling */
+.label-area-left::-webkit-scrollbar { width: 6px; }
+.label-area-left::-webkit-scrollbar-track { background: transparent; }
+.label-area-left::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 20px; }
+.label-area-left::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
 
 /* =====================================================
    PRINT BUTTON
@@ -98,6 +109,7 @@
     letter-spacing: 0.01em;
     min-width: 180px;
     justify-content: center;
+    flex-shrink: 0;
 }
 .print-btn:hover {
     background: linear-gradient(135deg, #1d4ed8, #1e40af);
@@ -114,6 +126,7 @@
     gap: 8px;
     flex-wrap: wrap;
     justify-content: center;
+    flex-shrink: 0;
 }
 .status-chip {
     padding: 4px 10px;
@@ -132,7 +145,18 @@
 }
 
 /* =====================================================
-   LABEL PREVIEW  — DO NOT CHANGE STRUCTURE
+   LABEL PREVIEW SCALER
+   ===================================================== */
+.label-preview-scaler {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    transition: transform 0.2s ease;
+}
+
+/* =====================================================
+   LABEL PREVIEW
    ===================================================== */
 .label-preview {
     background-color: white;
@@ -142,6 +166,7 @@
     overflow: hidden;
     box-shadow: var(--shadow-lg);
     transition: box-shadow 0.3s;
+    flex-shrink: 0;
 }
 .label-preview:hover { box-shadow: 0 12px 40px rgba(0,0,0,0.16); }
 
@@ -239,8 +264,8 @@ hr {
    RIGHT PANEL
    ===================================================== */
 .label-area-right {
-    background-color: red;
     width: 30%;
+    min-width: 310px;
     height: 100%;
     background: var(--surface);
     border-radius: var(--radius-lg);
@@ -251,6 +276,7 @@ hr {
     flex-direction: column;
     position: sticky;
     top: 24px;
+    flex-shrink: 0;
 }
 
 /* =====================================================
@@ -262,9 +288,13 @@ hr {
     border-bottom: 1px solid var(--border);
     padding: 8px 8px 0;
     gap: 2px;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
+    overflow-x: auto;
     flex-shrink: 0;
 }
+.editor-nav::-webkit-scrollbar { height: 2px; }
+.editor-nav::-webkit-scrollbar-thumb { background: var(--border); }
+
 .editor-nav-btn {
     border: none;
     outline: none;
@@ -280,6 +310,7 @@ hr {
     white-space: nowrap;
     border-bottom: 2px solid transparent;
     letter-spacing: 0.01em;
+    flex-shrink: 0;
 }
 .editor-nav-btn:hover { color: var(--text-primary); background: rgba(0,0,0,0.04); }
 .editor-nav-btn.active { color: var(--blue); border-bottom-color: var(--blue); background: var(--surface); }
@@ -883,34 +914,155 @@ hr {
 .mt-8 { margin-top:8px; }
 
 /* =====================================================
-   RESPONSIVE
+   RESPONSIVE — FIXED HEIGHT CONTROLS
    ===================================================== */
-@media screen and (max-width:1100px) {
-    .label-area { flex-direction:column; align-items:center; }
-    .label-area-left { position:static; }
-    .label-area-right { width:100%; min-width:unset; height:auto; max-height:70vh; position:static; }
+
+/* Large desktops (≥1600px) */
+@media screen and (max-width: 1599px) and (min-width: 1400px) {
+    .label-area {
+        gap: 20px;
+        padding: 20px;
+    }
+    .label-area-right {
+        min-width: 300px;
+    }
 }
-@media screen and (max-width:700px) {
-    .label-area { padding:12px; gap:16px; }
-    .editor-nav { overflow-x:auto; flex-wrap:nowrap; }
-    .editor-nav-btn { flex-shrink:0; }
-    .settings-grid-2 { grid-template-columns:1fr; }
-    .icon-grid { grid-template-columns:1fr 1fr 1fr; }
-    .count-info-grid { grid-template-columns:repeat(3,1fr); }
-    .set-grid { grid-template-columns:repeat(2,1fr); }
-    .custom-number-grid { gap:5px; }
-    .custom-num-btn { width:32px; height:32px; font-size:12px; }
+
+/* Medium laptops (1260–1399px) */
+@media screen and (max-width: 1399px) and (min-width: 1260px) {
+    .label-area {
+        gap: 16px;
+        padding: 16px;
+        height: 85vh; /* Strictly locked */
+    }
+    .label-area-left {
+        gap: 10px;
+    }
+    .label-area-right {
+        min-width: 290px;
+    }
+    .editor-nav-btn {
+        padding: 6px 9px;
+        font-size: 11.5px;
+    }
+    .label-editor {
+        padding: 14px;
+    }
+    .print-btn {
+        padding: 10px 18px;
+        font-size: 13px;
+        min-width: 160px;
+    }
+}
+
+/* Small laptops / Constrained heights (1100–1259px, or height ~650px) */
+@media screen and (max-width: 1259px) and (min-width: 1101px) {
+    .label-area {
+        gap: 14px;
+        padding: 14px;
+        height: 85vh; /* Strictly locked */
+    }
+    .label-area-left {
+        gap: 8px;
+    }
+    .label-area-right {
+        min-width: 270px;
+    }
+    .editor-nav {
+        padding: 6px 6px 0;
+        gap: 1px;
+    }
+    .editor-nav-btn {
+        padding: 5px 8px;
+        font-size: 11px;
+    }
+    .label-editor {
+        padding: 12px;
+    }
+    .print-btn {
+        padding: 9px 16px;
+        font-size: 12.5px;
+        min-width: 150px;
+    }
+    .status-chip {
+        font-size: 10.5px;
+        padding: 3px 8px;
+    }
+    .editor-section-title h3 {
+        font-size: 15px;
+    }
+    .settings-group {
+        padding: 10px;
+    }
+    .count-info-val {
+        font-size: 17px;
+    }
+}
+
+/* Desktop Fallback Constraints for Low Resolution Heights */
+@media screen and (max-height: 750px) {
+    .label-area {
+        height: 85vh; /* Forcibly holds fixed view heights, never converts to auto */
+        overflow: hidden;
+    }
+    .label-area-left {
+        min-height: 0;
+        justify-content: flex-start;
+        padding-top: 16px;
+        padding-bottom: 16px;
+    }
+    .label-area-right {
+        max-height: 100%;
+    }
+}
+
+/* Stacked layout for narrow viewports (≤1100px) */
+@media screen and (max-width: 1100px) {
+    .label-area {
+        flex-direction: column;
+        align-items: center;
+        height: auto;
+        min-height: 85vh;
+        overflow: auto; /* Allow layout scroll only when columns break into single stacked view rows */
+    }
+    .label-area-left {
+        position: static;
+        width: 100%;
+        height: auto;
+        min-height: 400px;
+        padding: 20px 0;
+    }
+    .label-area-right {
+        width: 100%;
+        min-width: unset;
+        height: auto;
+        max-height: 70vh;
+        position: static;
+    }
+}
+
+/* Very small screens */
+@media screen and (max-width: 700px) {
+    .label-area { padding: 12px; gap: 16px; }
+    .editor-nav { overflow-x: auto; flex-wrap: nowrap; }
+    .editor-nav-btn { flex-shrink: 0; }
+    .settings-grid-2 { grid-template-columns: 1fr; }
+    .icon-grid { grid-template-columns: 1fr 1fr 1fr; }
+    .count-info-grid { grid-template-columns: repeat(3,1fr); }
+    .set-grid { grid-template-columns: repeat(2,1fr); }
+    .custom-number-grid { gap: 5px; }
+    .custom-num-btn { width: 32px; height: 32px; font-size: 12px; }
 }
 
 /* =====================================================
-   PRINT — hide UI chrome
+   PRINT
    ===================================================== */
 @media print {
     .label-area-right,
     .print-btn,
     .label-status-bar,
     .label-toast { display:none !important; }
-    .label-area { padding:0; background:white; min-height:unset; }
-    .label-area-left { position:static; }
+    .label-area { padding:0; background:white; min-height:unset; height:auto; }
+    .label-area-left { position:static; padding:0; background:none; }
     .label-preview { box-shadow:none; }
 }
