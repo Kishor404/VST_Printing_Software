@@ -1,19 +1,11 @@
 import '../styles/POForm.css';
-import { useState, useEffect, useRef } from 'react';
-import DefaultLetterhead from '../assets/letterhead.jpg';
+import { useState, useRef, useEffect } from 'react';
 
 /* ============================================================
-   LOCAL STORAGE KEYS
+   LOCAL STORAGE KEY
    ============================================================ */
-const LS_SETTINGS    = 'po_settings';
-const LS_ORDER       = 'po_order_data';
-const LS_SAVED       = 'po_saved_orders';
-const LS_COMPANY     = 'po_company_info';
-const LS_LETTERHEAD  = 'po_letterhead_img';   // base64 data URL or null
+const LS_SAVED_FILES = 'po_saved_pdf_files';
 
-/* ============================================================
-   HELPERS
-   ============================================================ */
 const lsLoad = (key, fallback) => {
     try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback; }
     catch { return fallback; }
@@ -23,941 +15,468 @@ const lsSave = (key, value) => {
 };
 
 /* ============================================================
-   DEFAULTS
+   LOAD SCRIPT HELPER  (idempotent, with timeout)
    ============================================================ */
-const DEFAULT_COMPANY = {
-    name:    'VST MAARKETING',
-    tagline: 'PURIFYING WATER',
-    headOffice: '906 I First Floor, Thai Complex,\nTenkasi Road, Rajapalayam - 626 11',
-    phone:   '04563 231045, 90477 22131',
-    email:   'vstmaarketing@gmail.com',
-    website: 'vstmaarketing.com',
-};
+const loadScript = (src) =>
+    new Promise((res, rej) => {
+        if (document.querySelector(`script[src="${src}"]`)) { res(); return; }
+        const s = document.createElement('script');
+        s.src     = src;
+        s.onload  = () => res();
+        s.onerror = () => rej(new Error(`Failed to load ${src}`));
+        setTimeout(() => rej(new Error(`Timeout: ${src}`)), 20000);
+        document.head.appendChild(s);
+    });
 
-const DEFAULT_ORDER = {
-    date:           '',
-    saleOrderNumber:'',
-    customerName:   '',
-    productModel:   '',
-    address:        '',
-    salesmanName:   '',
-    mobileNumber:   '',
-    contactNumber:  '',
-    city:           '',
-    offMail:        '',
-    pincode:        '',
-    email:          '',
-
-    /* Product rows */
-    products: [
-        {
-            id: 1,
-            productModel: 'Domestic RO Purifier',
-            optional:     'UV / UF / Ozone / Disinfection',
-            qty:          '',
-            rate:         '',
-            amount:       '',
-        },
-        {
-            id: 2,
-            productModel: 'Water Dispenser',
-            optional:     'Accessories - RO __ / (75/100/125)\nN / NC / NHC / Others',
-            qty:          '',
-            rate:         '',
-            amount:       '',
-        },
-    ],
-
-    /* Installation */
-    waterSource:          'Borewell',   // Borewell | Corporation | Tanker
-    waterTDS:             '',
-    installationAddress:  '',
-    preferredDate:        '',
-
-    /* Payment */
-    advanceAmount:  '',
-    balanceAmount:  '',
-    paymentMode:    'Cash',             // Cash | UPI | Card | Bank Transfer
-    transactionId:  '',
-
-    /* Terms */
-    termsText: 'Installation will be done within 24–72 hours after confirmation. Warranty covers only manufacturing defects.',
-    declarationText: 'I confirm that the above details are correct and I agree to the terms & conditions.',
-};
-
-const DEFAULT_SETTINGS = {
-    fontFamily:     'Calibri',
-    fontSize:       13,
-    headingColor:   '#1a3a6b',
-    accentColor:    '#2563eb',
-    borderColor:    '#000000',
-    headerBg:       '#ffffff',
-    tableHeaderBg:  '#dce6f7',
-    paperSize:      'A4',           // A4 | Letter
-    showLogo:       true,
-    showTerms:      true,
-    showDeclaration:true,
-    showSignature:  true,
-    copies:         1,
-};
-
-const FONT_OPTIONS = [
-    'Calibri','Arial','Georgia','Times New Roman',
-    'Poppins','Roboto','Montserrat','Verdana','Tahoma','Courier New',
+/* ============================================================
+   ENSURE pdf-lib  →  window.PDFLib
+   Tries two CDNs so one failure doesn't block the user.
+   ============================================================ */
+const PDF_LIB_CDNS = [
+    'https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js',
+    'https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js',
+    'https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js',
 ];
 
-const WATER_SOURCE_OPTIONS = ['Borewell', 'Corporation', 'Tanker'];
-const PAYMENT_MODE_OPTIONS  = ['Cash', 'UPI', 'Card', 'Bank Transfer'];
+const ensurePdfLib = async () => {
+    if (window.PDFLib) return;
+    for (const cdn of PDF_LIB_CDNS) {
+        try {
+            await loadScript(cdn);
+            if (window.PDFLib) return;
+        } catch { /* try next */ }
+    }
+    throw new Error('Could not load pdf-lib. Check your internet connection.');
+};
 
 /* ============================================================
    COMPONENT
    ============================================================ */
 export default function POForm() {
 
-    /* ---- UI ---- */
-    const [activeTab, setActiveTab] = useState('order');
-    const [toast, setToast]         = useState(null);
-    const letterheadInputRef        = useRef(null);
+    const [toast,         setToast]         = useState(null);
+    const [uploadedFile,  setUploadedFile]  = useState(null);
+    const [isDragging,    setIsDragging]    = useState(false);
+    const fileInputRef                      = useRef(null);
 
-    /* ---- LETTERHEAD IMAGE ---- */
-    // null  → use DefaultLetterhead (letterhead.jpg)
-    // string → base64 data URL uploaded by user (persisted in localStorage)
-    const [letterheadImg, setLetterheadImg] = useState(() => lsLoad(LS_LETTERHEAD, null));
+    const [serialPrefix,  setSerialPrefix]  = useState('');
+    const [printFrom,     setPrintFrom]     = useState('');
+    const [printTo,       setPrintTo]       = useState('');
+    const [isProcessing,  setIsProcessing]  = useState(false);
+    const [printProgress, setPrintProgress] = useState(null);
 
-    // The actual src to show: user upload takes priority, else the bundled default
-    const letterheadSrc = letterheadImg || DefaultLetterhead;
+    const [savedFiles, setSavedFiles] = useState(() => lsLoad(LS_SAVED_FILES, []));
+    const [activeTab,  setActiveTab]  = useState('upload');
 
-    const handleLetterheadUpload = (e) => {
-        const file = e.target.files?.[0];
-        if (!file) return;
-        if (!file.type.startsWith('image/')) { showToast('Please upload an image file', 'error'); return; }
-        const reader = new FileReader();
-        reader.onload = (ev) => {
-            const dataUrl = ev.target.result;
-            setLetterheadImg(dataUrl);
-            lsSave(LS_LETTERHEAD, dataUrl);
-            showToast('Letterhead updated!');
-        };
-        reader.readAsDataURL(file);
-        // Reset input so same file can be re-selected
-        e.target.value = '';
-    };
+    useEffect(() => { lsSave(LS_SAVED_FILES, savedFiles); }, [savedFiles]);
 
-    const resetLetterhead = () => {
-        setLetterheadImg(null);
-        lsSave(LS_LETTERHEAD, null);
-        showToast('Letterhead reset to default', 'info');
-    };
-
-    /* ---- DATA ---- */
-    const [company,  setCompany]  = useState(() => lsLoad(LS_COMPANY,  DEFAULT_COMPANY));
-    const [order,    setOrder]    = useState(() => lsLoad(LS_ORDER,    DEFAULT_ORDER));
-    const [settings, setSettings] = useState(() => lsLoad(LS_SETTINGS, DEFAULT_SETTINGS));
-    const [saved,    setSaved]    = useState(() => lsLoad(LS_SAVED,    []));
-    const [saveName, setSaveName] = useState('');
-
-    /* ============================================================
-       PERSIST
-       ============================================================ */
-    useEffect(() => { lsSave(LS_COMPANY,  company);  }, [company]);
-    useEffect(() => { lsSave(LS_ORDER,    order);    }, [order]);
-    useEffect(() => { lsSave(LS_SETTINGS, settings); }, [settings]);
-    useEffect(() => { lsSave(LS_SAVED,    saved);    }, [saved]);
-
-    /* ============================================================
-       TOAST
-       ============================================================ */
+    /* ---- Toast ---- */
     const showToast = (msg, type = 'success') => {
         setToast({ msg, type });
-        setTimeout(() => setToast(null), 2600);
+        setTimeout(() => setToast(null), 2800);
     };
 
-    /* ============================================================
-       FIELD HELPERS
-       ============================================================ */
-    const setField    = (key, val) => setOrder(o => ({ ...o, [key]: val }));
-    const setSetting  = (key, val) => setSettings(s => ({ ...s, [key]: val }));
-    const setCoField  = (key, val) => setCompany(c => ({ ...c, [key]: val }));
+    /* ==========================================================
+       FILE HANDLING — PDF only
+       ========================================================== */
+    const readFileAsBase64 = (file) =>
+        new Promise((resolve, reject) => {
+            const reader  = new FileReader();
+            reader.onload  = (e) => resolve(e.target.result);
+            reader.onerror = () => reject(new Error('Read failed'));
+            reader.readAsDataURL(file);
+        });
 
-    /* ---- product rows ---- */
-    const updateProduct = (id, field, val) => {
-        setOrder(o => ({
-            ...o,
-            products: o.products.map(p => p.id === id ? { ...p, [field]: val } : p),
-        }));
-    };
-    const addProductRow = () => {
-        const newId = Date.now();
-        setOrder(o => ({
-            ...o,
-            products: [...o.products, { id: newId, productModel: '', optional: '', qty: '', rate: '', amount: '' }],
-        }));
-    };
-    const removeProductRow = (id) => {
-        setOrder(o => ({ ...o, products: o.products.filter(p => p.id !== id) }));
-    };
-
-    /* ============================================================
-       SAVED ORDERS
-       ============================================================ */
-    const saveOrder = () => {
-        const name = saveName.trim() || `Order ${saved.length + 1}`;
-        setSaved(s => [...s, { id: Date.now(), name, order: { ...order }, settings: { ...settings } }]);
-        setSaveName('');
-        showToast(`Saved "${name}"`);
-    };
-    const loadOrder = (entry) => {
-        setOrder(entry.order);
-        setSettings(entry.settings);
-        showToast(`Loaded "${entry.name}"`);
-    };
-    const deleteOrder = (id) => setSaved(s => s.filter(e => e.id !== id));
-
-    const clearOrder = () => {
-        setOrder(DEFAULT_ORDER);
-        showToast('Form cleared', 'info');
-    };
-
-    /* ============================================================
-       PRINT — pure HTML string, no DOM cloning
-       ============================================================ */
-    const buildFormHTML = () => {
-        const s  = settings;
-        const o  = order;
-        const co = company;
-
-        const pageW = s.paperSize === 'Letter' ? '216mm' : '210mm';
-        const pageH = s.paperSize === 'Letter' ? '279mm' : '297mm';
-
-        /* field row helper */
-        const fieldRow = (label, value, style = '') =>
-            `<div style="display:flex;align-items:baseline;gap:4px;margin-bottom:3px;${style}">
-                <span style="white-space:nowrap;font-weight:600;">${label} :</span>
-                <span style="flex:1;">${value || ''}</span>
-            </div>`;
-
-        /* product rows */
-        const productRows = o.products.map((p, i) =>
-            `<tr>
-                <td style="border:1px solid ${s.borderColor};padding:5px 7px;text-align:center;">${i + 1}</td>
-                <td style="border:1px solid ${s.borderColor};padding:5px 7px;">${p.productModel}</td>
-                <td style="border:1px solid ${s.borderColor};padding:5px 7px;">${p.optional.replace(/\n/g, '<br>')}</td>
-                <td style="border:1px solid ${s.borderColor};padding:5px 7px;text-align:center;">${p.qty}</td>
-                <td style="border:1px solid ${s.borderColor};padding:5px 7px;text-align:right;">${p.rate}</td>
-                <td style="border:1px solid ${s.borderColor};padding:5px 7px;text-align:right;">${p.amount}</td>
-            </tr>`).join('');
-
-        const termsHTML = s.showTerms
-            ? `<div style="margin-top:10px;">
-                <p style="font-weight:700;margin-bottom:3px;">Terms &amp; Conditions</p>
-                <p style="font-size:${s.fontSize - 1}px;">${o.termsText}</p>
-               </div>` : '';
-
-        const declarationHTML = s.showDeclaration
-            ? `<div style="margin-top:8px;">
-                <p style="font-weight:600;">Customer Declaration</p>
-                <p style="font-size:${s.fontSize - 1}px;">${o.declarationText}</p>
-               </div>` : '';
-
-        const signatureHTML = s.showSignature
-            ? `<div style="display:flex;justify-content:space-between;margin-top:28px;align-items:flex-end;">
-                <div>
-                    <p style="font-weight:700;">Authorized Signatory:</p>
-                    <p style="margin-top:4px;">For <strong>${co.name}</strong></p>
-                    <p style="margin-top:20px;"><strong>Signature &amp; Seal</strong> :</p>
-                </div>
-                <div style="text-align:center;">
-                    <p style="font-weight:700;">Customer Signature</p>
-                    <div style="margin-top:32px;border-bottom:1px solid #333;width:160px;"></div>
-                </div>
-            </div>` : '';
-
-        return `
-            <div style="
-                width:${pageW};
-                font-family:${s.fontFamily},Arial,sans-serif;
-                font-size:${s.fontSize}px;
-                color:#000;
-                background:#fff;
-                padding:14mm 12mm;
-                box-sizing:border-box;
-                page-break-inside:avoid;
-            ">
-                <!-- LETTERHEAD IMAGE — full width -->
-                <div style="width:100%;margin-bottom:10px;line-height:0;">
-                    <img src="${letterheadSrc}" alt="Letterhead"
-                        style="width:100%;height:auto;display:block;object-fit:contain;" />
-                </div>
-
-                <!-- TITLE -->
-                <h2 style="text-align:center;font-size:${s.fontSize + 4}px;font-weight:800;letter-spacing:1px;margin:0 0 4px;">SALE ORDER FORM</h2>
-                <div style="text-align:right;font-weight:600;margin-bottom:14px;">Date : <span style="min-width:90px;display:inline-block;">${o.date || ''}</span></div>
-
-                <!-- CUSTOMER INFO -->
-                <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 20px;margin-bottom:14px;font-size:${s.fontSize}px;">
-                    ${fieldRow('Sale Order Number', o.saleOrderNumber)}
-                    ${fieldRow('Customer Name', o.customerName)}
-                    ${fieldRow('Product / Model', o.productModel)}
-                    ${fieldRow('Address', o.address)}
-                    ${fieldRow('Salesman Name', o.salesmanName)}
-                    ${fieldRow('Mobile Number', o.mobileNumber)}
-                    ${fieldRow('Contact Number', o.contactNumber)}
-                    ${fieldRow('City', o.city)}
-                    ${fieldRow('Off. Mail', o.offMail)}
-                    ${fieldRow('Pincode', o.pincode)}
-                    <div></div>
-                    ${fieldRow('E-Mail', o.email)}
-                </div>
-
-                <!-- PRODUCT DETAILS -->
-                <p style="font-weight:700;margin-bottom:5px;">Product Details</p>
-                <table style="width:100%;border-collapse:collapse;font-size:${s.fontSize}px;margin-bottom:14px;">
-                    <thead>
-                        <tr style="background:${s.tableHeaderBg};">
-                            <th style="border:1px solid ${s.borderColor};padding:6px 7px;width:36px;">S.No</th>
-                            <th style="border:1px solid ${s.borderColor};padding:6px 7px;text-align:left;">Product Model</th>
-                            <th style="border:1px solid ${s.borderColor};padding:6px 7px;text-align:left;color:${s.accentColor};">Optional</th>
-                            <th style="border:1px solid ${s.borderColor};padding:6px 7px;width:40px;">Qty</th>
-                            <th style="border:1px solid ${s.borderColor};padding:6px 7px;width:60px;">Rate</th>
-                            <th style="border:1px solid ${s.borderColor};padding:6px 7px;width:70px;">Amount</th>
-                        </tr>
-                    </thead>
-                    <tbody>${productRows}</tbody>
-                </table>
-
-                <!-- INSTALLATION + PAYMENT -->
-                <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 24px;margin-bottom:12px;font-size:${s.fontSize}px;">
-                    <div>
-                        <p style="font-weight:700;margin-bottom:6px;">Installation Details</p>
-                        ${fieldRow('Water Source', o.waterSource)}
-                        ${fieldRow('Water TDS', o.waterTDS)}
-                        ${fieldRow('Installation Address', o.installationAddress)}
-                        ${fieldRow('Preferred Installation Date', o.preferredDate)}
-                    </div>
-                    <div>
-                        <p style="font-weight:700;margin-bottom:6px;">&nbsp;</p>
-                        ${fieldRow('Advance Amount', o.advanceAmount)}
-                        ${fieldRow('Balance Amount', o.balanceAmount)}
-                        ${fieldRow('Payment Mode', o.paymentMode)}
-                        ${fieldRow('Transaction ID', o.transactionId)}
-                    </div>
-                </div>
-
-                <!-- TERMS -->
-                ${termsHTML}
-
-                <!-- DECLARATION -->
-                ${declarationHTML}
-
-                <!-- SIGNATURE -->
-                ${signatureHTML}
-            </div>`;
-    };
-
-    const handlePrint = () => {
-        const copies   = Math.max(1, Number(settings.copies) || 1);
-        const pageSize = settings.paperSize === 'Letter' ? '216mm 279mm' : 'A4';
-
-        let allCopies = '';
-        for (let i = 0; i < copies; i++) {
-            allCopies += `<div style="page-break-after:${i < copies - 1 ? 'always' : 'auto'};">${buildFormHTML()}</div>`;
+    const processFile = async (file) => {
+        if (!file) return;
+        const isPDF = file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
+        if (!isPDF) {
+            showToast('Please upload a PDF file (.pdf)', 'error');
+            return;
         }
-
-        const pw = window.open('', '', 'width=1200,height=900');
-        pw.document.write(`<!DOCTYPE html><html><head><title>Sale Order</title>
-            <style>
-                @page { size:${pageSize}; margin:0; }
-                *,*::before,*::after { box-sizing:border-box; margin:0; padding:0; }
-                body { background:#fff; }
-                a { color:inherit; text-decoration:none; }
-            </style></head>
-            <body>${allCopies}</body></html>`);
-        pw.document.close();
-        setTimeout(() => pw.print(), 500);
+        try {
+            const base64 = await readFileAsBase64(file);
+            setUploadedFile({
+                name:       file.name,
+                base64,
+                size:       file.size,
+                uploadedAt: new Date().toLocaleString(),
+            });
+            showToast(`"${file.name}" uploaded`);
+        } catch {
+            showToast('Failed to read file', 'error');
+        }
     };
 
-    /* ============================================================
-       LIVE PREVIEW RENDER
-       ============================================================ */
-    const PreviewForm = () => {
-        const s  = settings;
-        const o  = order;
-        const co = company;
+    const handleFileInput = (e) => { processFile(e.target.files?.[0]); e.target.value = ''; };
+    const handleDrop      = (e)  => { e.preventDefault(); setIsDragging(false); processFile(e.dataTransfer.files?.[0]); };
 
-        return (
-            <div className="po-preview-paper" style={{
-                fontFamily: `${s.fontFamily}, Arial, sans-serif`,
-                fontSize:   `${s.fontSize}px`,
-            }}>
-                {/* LETTERHEAD — single full-width image */}
-                <div className="po-letterhead-img-wrap">
-                    <img src={letterheadSrc} alt="Letterhead" className="po-letterhead-img" />
-                </div>
-
-                {/* TITLE */}
-                <h2 className="po-title" style={{ fontSize: `${s.fontSize + 4}px` }}>SALE ORDER FORM</h2>
-                <div className="po-date-row">
-                    Date :&nbsp;<span className="po-underline">{o.date}</span>
-                </div>
-
-                {/* CUSTOMER GRID */}
-                <div className="po-customer-grid">
-                    {[
-                        ['Sale Order Number', o.saleOrderNumber],
-                        ['Customer Name',     o.customerName],
-                        ['Product / Model',   o.productModel],
-                        ['Address',           o.address],
-                        ['Salesman Name',     o.salesmanName],
-                        ['Mobile Number',     o.mobileNumber],
-                        ['Contact Number',    o.contactNumber],
-                        ['City',              o.city],
-                        ['Off. Mail',         o.offMail],
-                        ['Pincode',           o.pincode],
-                        [null, null],
-                        ['E-Mail',            o.email],
-                    ].map((pair, i) => pair[0] === null ? (
-                        <div key={i} />
-                    ) : (
-                        <div key={i} className="po-field-row">
-                            <span className="po-field-label">{pair[0]} :</span>
-                            <span className="po-field-value po-underline">{pair[1]}</span>
-                        </div>
-                    ))}
-                </div>
-
-                {/* PRODUCT TABLE */}
-                <p className="po-section-title">Product Details</p>
-                <table className="po-table" style={{ borderColor: s.borderColor }}>
-                    <thead>
-                        <tr style={{ background: s.tableHeaderBg }}>
-                            {['S.No','Product Model','Optional','Qty','Rate','Amount'].map(h => (
-                                <th key={h} className="po-th"
-                                    style={{ borderColor: s.borderColor, color: h === 'Optional' ? s.accentColor : 'inherit' }}>
-                                    {h}
-                                </th>
-                            ))}
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {o.products.map((p, i) => (
-                            <tr key={p.id}>
-                                <td className="po-td po-td--center" style={{ borderColor: s.borderColor }}>{i + 1}</td>
-                                <td className="po-td" style={{ borderColor: s.borderColor }}>{p.productModel}</td>
-                                <td className="po-td po-td--optional" style={{ borderColor: s.borderColor }}>
-                                    {p.optional.split('\n').map((l,j) => <span key={j}>{l}<br /></span>)}
-                                </td>
-                                <td className="po-td po-td--center" style={{ borderColor: s.borderColor }}>{p.qty}</td>
-                                <td className="po-td po-td--right"  style={{ borderColor: s.borderColor }}>{p.rate}</td>
-                                <td className="po-td po-td--right"  style={{ borderColor: s.borderColor }}>{p.amount}</td>
-                            </tr>
-                        ))}
-                    </tbody>
-                </table>
-
-                {/* INSTALLATION + PAYMENT */}
-                <div className="po-bottom-grid">
-                    <div>
-                        <p className="po-section-title">Installation Details</p>
-                        {[
-                            ['Water Source',               o.waterSource],
-                            ['Water TDS',                  o.waterTDS],
-                            ['Installation Address',       o.installationAddress],
-                            ['Preferred Installation Date',o.preferredDate],
-                        ].map(([l,v]) => (
-                            <div key={l} className="po-field-row">
-                                <span className="po-field-label">{l} :</span>
-                                <span className="po-field-value po-underline">{v}</span>
-                            </div>
-                        ))}
-                    </div>
-                    <div>
-                        <p className="po-section-title">&nbsp;</p>
-                        {[
-                            ['Advance Amount',  o.advanceAmount],
-                            ['Balance Amount',  o.balanceAmount],
-                            ['Payment Mode',    o.paymentMode],
-                            ['Transaction ID',  o.transactionId],
-                        ].map(([l,v]) => (
-                            <div key={l} className="po-field-row">
-                                <span className="po-field-label">{l} :</span>
-                                <span className="po-field-value po-underline">{v}</span>
-                            </div>
-                        ))}
-                    </div>
-                </div>
-
-                {/* TERMS */}
-                {s.showTerms && (
-                    <div className="po-terms">
-                        <p className="po-terms-title">Terms &amp; Conditions</p>
-                        <p style={{ fontSize: `${s.fontSize - 1}px` }}>{o.termsText}</p>
-                    </div>
-                )}
-
-                {/* DECLARATION */}
-                {s.showDeclaration && (
-                    <div className="po-declaration">
-                        <p className="po-terms-title" style={{ fontWeight: 600 }}>Customer Declaration</p>
-                        <p style={{ fontSize: `${s.fontSize - 1}px` }}>{o.declarationText}</p>
-                    </div>
-                )}
-
-                {/* SIGNATURE */}
-                {s.showSignature && (
-                    <div className="po-signature-row">
-                        <div>
-                            <p className="po-sig-label">Authorized Signatory:</p>
-                            <p style={{ marginTop: 4 }}>For <strong>{co.name}</strong></p>
-                            <p className="po-sig-seal"><strong>Signature &amp; Seal</strong> :</p>
-                        </div>
-                        <div className="po-sig-customer">
-                            <p className="po-sig-label">Customer Signature</p>
-                            <div className="po-sig-line" />
-                        </div>
-                    </div>
-                )}
-            </div>
-        );
+    /* ==========================================================
+       SAVED FILES
+       ========================================================== */
+    const saveCurrentFile = () => {
+        if (!uploadedFile) { showToast('No file to save', 'error'); return; }
+        if (savedFiles.some(f => f.name === uploadedFile.name)) {
+            showToast(`"${uploadedFile.name}" is already saved`, 'info'); return;
+        }
+        setSavedFiles(prev => [{ ...uploadedFile, id: Date.now() }, ...prev]);
+        showToast(`Saved "${uploadedFile.name}"`);
     };
 
-    /* ============================================================
-       TABS
-       ============================================================ */
-    const TABS = [
-        { id: 'order',   label: 'Order Info'  },
-        { id: 'product', label: 'Products'    },
-        { id: 'install', label: 'Installation'},
-        { id: 'payment', label: 'Payment'     },
-        { id: 'company', label: 'Company'     },
-        { id: 'design',  label: 'Design'      },
-        { id: 'saved',   label: 'Saved'       },
-    ];
+    const loadSavedFile   = (entry) => { setUploadedFile(entry); setActiveTab('upload'); showToast(`Loaded "${entry.name}"`); };
+    const deleteSavedFile = (id)    => { setSavedFiles(prev => prev.filter(f => f.id !== id)); showToast('File removed', 'info'); };
 
-    /* ============================================================
+    /* ==========================================================
+       BASE64 DATA-URL  →  Uint8Array
+       ========================================================== */
+    const base64ToUint8Array = (dataUrl) => {
+        const b64 = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl;
+        const bin = atob(b64);
+        const arr = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+        return arr;
+    };
+
+    /* ==========================================================
+       SERIAL PRINT  —  pdf-lib strategy
+       ─────────────────────────────────────────────────────────
+       For each serial number n in [from, to]:
+         1. Load the original PDF bytes with PDFLib.PDFDocument.load()
+         2. For every page in that PDF, draw the serial text at
+            top-left (x=20, y = height-30) using Helvetica-Bold.
+            No background, no border — pure text overlay.
+         3. Save the stamped PDF as bytes → Blob → object URL.
+         4. Open the URL in a new tab and call print().
+       ─────────────────────────────────────────────────────────
+       We process serials one at a time to keep memory low.
+       ========================================================== */
+    const handleSerialPrint = async () => {
+        if (!uploadedFile) { showToast('Upload a PDF file first', 'error'); return; }
+
+        const from = parseInt(printFrom, 10);
+        const to   = parseInt(printTo,   10);
+        if (isNaN(from) || isNaN(to)) { showToast('Enter valid From and To numbers', 'error'); return; }
+        if (from > to)                { showToast('"From" must be ≤ "To"', 'error'); return; }
+        if (to - from > 499)          { showToast('Range too large (max 500)', 'error'); return; }
+
+        setIsProcessing(true);
+        setPrintProgress({ current: 0, total: to - from + 1 });
+
+        try {
+            /* 1. Ensure pdf-lib is loaded */
+            await ensurePdfLib();
+            const { PDFDocument, StandardFonts, rgb } = window.PDFLib;
+
+            /* 2. Decode original PDF bytes once */
+            const srcBytes = base64ToUint8Array(uploadedFile.base64);
+
+            const total = to - from + 1;
+
+            /* 3. Build one combined PDF that holds all serials as separate pages */
+            const mergedDoc = await PDFDocument.create();
+            const font      = await mergedDoc.embedFont(StandardFonts.HelveticaBold);
+
+            for (let n = from; n <= to; n++) {
+                setPrintProgress({ current: n - from + 1, total });
+
+                const serial = `${serialPrefix}${n}`;
+
+                /* Load a fresh copy of the source PDF for each serial */
+                const srcDoc = await PDFDocument.load(srcBytes, { ignoreEncryption: true });
+
+                /* Copy all pages from source into a temp doc */
+                const tmpDoc   = await PDFDocument.create();
+                const tmpFont  = await tmpDoc.embedFont(StandardFonts.HelveticaBold);
+                const copiedPages = await tmpDoc.copyPages(srcDoc, srcDoc.getPageIndices());
+
+                for (const page of copiedPages) {
+                    tmpDoc.addPage(page);
+                    const { width, height } = page.getSize();
+
+                    /* Draw serial text at top-left — no box, no border */
+                    page.drawText(serial, {
+                        x:    15,
+                        y:    height - 20,
+                        size: 10,
+                        font: tmpFont,
+                        color: rgb(0, 0, 0),   // dark navy blue
+                        opacity: 0.75,
+                    });
+                }
+
+                /* Copy stamped pages into the merged output doc */
+                const stampedPages = await mergedDoc.copyPages(tmpDoc, tmpDoc.getPageIndices());
+                for (const p of stampedPages) mergedDoc.addPage(p);
+
+                /* Yield to UI */
+                await new Promise(r => setTimeout(r, 5));
+            }
+
+            /* 4. Save merged PDF → Blob → object URL */
+            const mergedBytes = await mergedDoc.save();
+            const blob        = new Blob([mergedBytes], { type: 'application/pdf' });
+            const url         = URL.createObjectURL(blob);
+
+            /* 5. Open in a new tab — browser's native PDF viewer handles printing */
+            const pw = window.open(url, '_blank');
+            if (!pw) {
+                showToast('Pop-up blocked — please allow pop-ups and try again', 'error');
+                URL.revokeObjectURL(url);
+                setIsProcessing(false);
+                setPrintProgress(null);
+                return;
+            }
+
+            /* Auto-trigger print once the PDF loads */
+            pw.addEventListener('load', () => {
+                setTimeout(() => {
+                    pw.print();
+                    /* Revoke after a delay so the PDF stays accessible */
+                    setTimeout(() => URL.revokeObjectURL(url), 60000);
+                }, 400);
+            });
+
+            setIsProcessing(false);
+            setPrintProgress(null);
+            showToast(`Ready to print: ${serialPrefix || ''}${from} – ${serialPrefix || ''}${to}`);
+
+        } catch (err) {
+            console.error('Serial print error:', err);
+            showToast(`Error: ${err.message || 'Failed to process PDF'}`, 'error');
+            setIsProcessing(false);
+            setPrintProgress(null);
+        }
+    };
+
+    /* ==========================================================
+       HELPERS
+       ========================================================== */
+    const formatSize = (bytes) => {
+        if (bytes < 1024)    return `${bytes} B`;
+        if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} KB`;
+        return `${(bytes / 1048576).toFixed(2)} MB`;
+    };
+
+    const previewSerial = () => {
+        const f = parseInt(printFrom, 10);
+        const t = parseInt(printTo,   10);
+        if (isNaN(f) || isNaN(t) || f > t) return null;
+        const p = serialPrefix || '';
+        return [f, Math.floor(f + (t - f) / 2), t]
+            .filter((v, i, a) => a.indexOf(v) === i)
+            .map(n => `${p}${n}`).join('  →  ');
+    };
+
+    /* ==========================================================
        RENDER
-       ============================================================ */
+       ========================================================== */
     return (
         <div className="po-area">
 
-            {toast && <div className={`po-toast po-toast--${toast.type}`}>{toast.msg}</div>}
-
-            {/* ====================================================
-                LEFT — PREVIEW
-                ==================================================== */}
+            {/* ============ LEFT — Upload Drop Zone ============ */}
             <div className="po-area-left">
 
-                <div className="po-action-bar">
-                    <button className="po-print-btn" onClick={handlePrint}>
-                        🖨&nbsp; Print {settings.copies > 1 ? `(${settings.copies} copies)` : 'Form'}
-                    </button>
-                    <button className="po-clear-btn" onClick={clearOrder}>↺ Clear</button>
+                <div
+                    className={`po-upload-dropzone${isDragging ? ' dragging' : ''}${uploadedFile ? ' has-file' : ''}`}
+                    onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+                    onDragLeave={() => setIsDragging(false)}
+                    onDrop={handleDrop}
+                    onClick={() => !uploadedFile && fileInputRef.current?.click()}
+                    style={{ cursor: uploadedFile ? 'default' : 'pointer' }}
+                >
+                    <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept="application/pdf,.pdf"
+                        style={{ display: 'none' }}
+                        onChange={handleFileInput}
+                    />
+
+                    {!uploadedFile ? (
+                        <div className="po-dropzone-idle">
+                            <div className="po-dropzone-icon">📋</div>
+                            <p className="po-dropzone-title">Drop your PDF file here</p>
+                            <p className="po-dropzone-sub">or <span className="po-link">click to browse</span></p>
+                            <p className="po-dropzone-hint">Accepts .pdf files only</p>
+                        </div>
+                    ) : (
+                        <div className="po-file-preview">
+                            <div className="po-file-icon-wrap">
+                                <span className="po-file-icon">📋</span>
+                            </div>
+                            <div className="po-file-meta">
+                                <p className="po-file-name">{uploadedFile.name}</p>
+                                <p className="po-file-info">
+                                    {formatSize(uploadedFile.size)} · {uploadedFile.uploadedAt || 'just now'}
+                                </p>
+                            </div>
+                            <button
+                                className="po-remove-btn"
+                                onClick={(e) => { e.stopPropagation(); setUploadedFile(null); }}
+                            >✕ Remove</button>
+                        </div>
+                    )}
                 </div>
 
-                <div className="po-preview-scroll">
-                    <PreviewForm />
+                {/* Action buttons */}
+                <div className="po-action-bar">
+                    <button
+                        className="po-print-btn"
+                        onClick={handleSerialPrint}
+                        disabled={!uploadedFile || isProcessing}
+                        style={{ opacity: (!uploadedFile || isProcessing) ? 0.55 : 1 }}
+                    >
+                        {isProcessing
+                            ? `⏳ Processing ${printProgress?.current ?? '…'}/${printProgress?.total ?? '…'}`
+                            : '🖨️ Serial Print'}
+                    </button>
+
+                    <button
+                        className="po-clear-btn"
+                        onClick={saveCurrentFile}
+                        disabled={!uploadedFile}
+                        style={{ opacity: !uploadedFile ? 0.55 : 1 }}
+                    >💾 Save File</button>
+
+                    <button
+                        className="po-clear-btn"
+                        onClick={() => fileInputRef.current?.click()}
+                    >📂 Change</button>
                 </div>
+
+                {/* Serial preview badge */}
+                {previewSerial() && (
+                    <div className="po-serial-preview">
+                        <span className="po-serial-preview-label">Serial preview:</span>
+                        <span className="po-serial-preview-value">{previewSerial()}</span>
+                    </div>
+                )}
             </div>
 
-            {/* ====================================================
-                RIGHT — EDITOR
-                ==================================================== */}
+            {/* ============ RIGHT — Settings Panel ============ */}
             <div className="po-area-right">
-
-                {/* TAB NAV */}
                 <div className="po-editor-nav">
-                    {TABS.map(t => (
-                        <button key={t.id}
-                            className={`po-nav-btn${activeTab === t.id ? ' active' : ''}`}
-                            onClick={() => setActiveTab(t.id)}>
-                            {t.label}
+                    {[
+                        { key: 'upload', icon: '🖨️', label: 'Print Settings' },
+                        { key: 'saved',  icon: '💾', label: 'Saved Files'    },
+                    ].map(({ key, icon, label }) => (
+                        <button
+                            key={key}
+                            className={`po-nav-btn${activeTab === key ? ' active' : ''}`}
+                            onClick={() => setActiveTab(key)}
+                        >
+                            <span>{icon}</span>{label}
                         </button>
                     ))}
                 </div>
 
                 <div className="po-editor-body">
 
-                    {/* ========== ORDER INFO ========== */}
-                    {activeTab === 'order' && (
+                    {/* ── Print Settings tab ── */}
+                    {activeTab === 'upload' && (
                         <div className="po-section">
-                            <div className="po-section-hdr"><span className="po-section-icon">📋</span><h3>Order Information</h3></div>
-
-                            <div className="po-field-group">
-                                <label>Date</label>
-                                <input type="date" value={order.date} onChange={e => setField('date', e.target.value)} />
+                            <div className="po-section-hdr">
+                                <span className="po-section-icon">🖨️</span>
+                                <h3>Serial Print Settings</h3>
                             </div>
-                            <div className="po-field-group">
-                                <label>Sale Order Number</label>
-                                <input type="text" placeholder="e.g. SO-2024-001" value={order.saleOrderNumber} onChange={e => setField('saleOrderNumber', e.target.value)} />
-                            </div>
+                            <p className="po-hint">
+                                Upload a PDF, set a print range, and optionally a prefix.
+                                Each copy gets its serial stamped at the top-left — PDF layout is preserved exactly.
+                            </p>
 
-                            <div className="po-group-title">Customer Details</div>
-                            <div className="po-grid-2">
+                            {/* Serial Prefix */}
+                            <div className="po-settings-group">
+                                <div className="po-settings-title">Serial Prefix (optional)</div>
                                 <div className="po-field-group">
-                                    <label>Customer Name</label>
-                                    <input type="text" value={order.customerName} onChange={e => setField('customerName', e.target.value)} />
-                                </div>
-                                <div className="po-field-group">
-                                    <label>Mobile Number</label>
-                                    <input type="text" value={order.mobileNumber} onChange={e => setField('mobileNumber', e.target.value)} />
-                                </div>
-                                <div className="po-field-group">
-                                    <label>Contact Number</label>
-                                    <input type="text" value={order.contactNumber} onChange={e => setField('contactNumber', e.target.value)} />
-                                </div>
-                                <div className="po-field-group">
-                                    <label>City</label>
-                                    <input type="text" value={order.city} onChange={e => setField('city', e.target.value)} />
-                                </div>
-                                <div className="po-field-group">
-                                    <label>Pincode</label>
-                                    <input type="text" value={order.pincode} onChange={e => setField('pincode', e.target.value)} />
-                                </div>
-                                <div className="po-field-group">
-                                    <label>E-Mail</label>
-                                    <input type="email" value={order.email} onChange={e => setField('email', e.target.value)} />
-                                </div>
-                            </div>
-                            <div className="po-field-group">
-                                <label>Address</label>
-                                <textarea rows={2} value={order.address} onChange={e => setField('address', e.target.value)} />
-                            </div>
-
-                            <div className="po-group-title">Sales Details</div>
-                            <div className="po-grid-2">
-                                <div className="po-field-group">
-                                    <label>Product / Model</label>
-                                    <input type="text" value={order.productModel} onChange={e => setField('productModel', e.target.value)} />
-                                </div>
-                                <div className="po-field-group">
-                                    <label>Salesman Name</label>
-                                    <input type="text" value={order.salesmanName} onChange={e => setField('salesmanName', e.target.value)} />
-                                </div>
-                                <div className="po-field-group">
-                                    <label>Off. Mail</label>
-                                    <input type="email" value={order.offMail} onChange={e => setField('offMail', e.target.value)} />
-                                </div>
-                            </div>
-                        </div>
-                    )}
-
-                    {/* ========== PRODUCTS ========== */}
-                    {activeTab === 'product' && (
-                        <div className="po-section">
-                            <div className="po-section-hdr"><span className="po-section-icon">📦</span><h3>Product Details</h3></div>
-                            <p className="po-hint">Edit product rows that appear in the table.</p>
-
-                            {order.products.map((p, i) => (
-                                <div className="po-product-card" key={p.id}>
-                                    <div className="po-product-card-header">
-                                        <span className="po-product-num">Row {i + 1}</span>
-                                        <button className="po-remove-btn" onClick={() => removeProductRow(p.id)}>✕ Remove</button>
-                                    </div>
-                                    <div className="po-field-group">
-                                        <label>Product Model</label>
-                                        <input type="text" value={p.productModel}
-                                            onChange={e => updateProduct(p.id, 'productModel', e.target.value)} />
-                                    </div>
-                                    <div className="po-field-group">
-                                        <label>Optional (separate lines with Enter)</label>
-                                        <textarea rows={2} value={p.optional}
-                                            onChange={e => updateProduct(p.id, 'optional', e.target.value)} />
-                                    </div>
-                                    <div className="po-grid-3">
-                                        <div className="po-field-group">
-                                            <label>Qty</label>
-                                            <input type="text" value={p.qty}
-                                                onChange={e => updateProduct(p.id, 'qty', e.target.value)} />
-                                        </div>
-                                        <div className="po-field-group">
-                                            <label>Rate (₹)</label>
-                                            <input type="text" value={p.rate}
-                                                onChange={e => updateProduct(p.id, 'rate', e.target.value)} />
-                                        </div>
-                                        <div className="po-field-group">
-                                            <label>Amount (₹)</label>
-                                            <input type="text" value={p.amount}
-                                                onChange={e => updateProduct(p.id, 'amount', e.target.value)} />
-                                        </div>
-                                    </div>
-                                </div>
-                            ))}
-
-                            <button className="po-add-btn" onClick={addProductRow}>+ Add Product Row</button>
-                        </div>
-                    )}
-
-                    {/* ========== INSTALLATION ========== */}
-                    {activeTab === 'install' && (
-                        <div className="po-section">
-                            <div className="po-section-hdr"><span className="po-section-icon">🔧</span><h3>Installation Details</h3></div>
-
-                            <div className="po-field-group">
-                                <label>Water Source</label>
-                                <div className="po-radio-group">
-                                    {WATER_SOURCE_OPTIONS.map(opt => (
-                                        <label key={opt} className={`po-radio-card${order.waterSource === opt ? ' active' : ''}`}>
-                                            <input type="radio" name="waterSource" value={opt}
-                                                checked={order.waterSource === opt}
-                                                onChange={() => setField('waterSource', opt)} />
-                                            {opt}
-                                        </label>
-                                    ))}
-                                </div>
-                            </div>
-
-                            <div className="po-field-group">
-                                <label>Water TDS</label>
-                                <input type="text" placeholder="e.g. 450 ppm" value={order.waterTDS}
-                                    onChange={e => setField('waterTDS', e.target.value)} />
-                            </div>
-                            <div className="po-field-group">
-                                <label>Installation Address</label>
-                                <textarea rows={2} value={order.installationAddress}
-                                    onChange={e => setField('installationAddress', e.target.value)} />
-                            </div>
-                            <div className="po-field-group">
-                                <label>Preferred Installation Date</label>
-                                <input type="date" value={order.preferredDate}
-                                    onChange={e => setField('preferredDate', e.target.value)} />
-                            </div>
-                        </div>
-                    )}
-
-                    {/* ========== PAYMENT ========== */}
-                    {activeTab === 'payment' && (
-                        <div className="po-section">
-                            <div className="po-section-hdr"><span className="po-section-icon">💰</span><h3>Payment Details</h3></div>
-
-                            <div className="po-grid-2">
-                                <div className="po-field-group">
-                                    <label>Advance Amount (₹)</label>
-                                    <input type="text" value={order.advanceAmount}
-                                        onChange={e => setField('advanceAmount', e.target.value)} />
-                                </div>
-                                <div className="po-field-group">
-                                    <label>Balance Amount (₹)</label>
-                                    <input type="text" value={order.balanceAmount}
-                                        onChange={e => setField('balanceAmount', e.target.value)} />
-                                </div>
-                            </div>
-
-                            <div className="po-field-group">
-                                <label>Payment Mode</label>
-                                <div className="po-radio-group">
-                                    {PAYMENT_MODE_OPTIONS.map(opt => (
-                                        <label key={opt} className={`po-radio-card${order.paymentMode === opt ? ' active' : ''}`}>
-                                            <input type="radio" name="paymentMode" value={opt}
-                                                checked={order.paymentMode === opt}
-                                                onChange={() => setField('paymentMode', opt)} />
-                                            {opt}
-                                        </label>
-                                    ))}
-                                </div>
-                            </div>
-
-                            <div className="po-field-group">
-                                <label>Transaction ID</label>
-                                <input type="text" value={order.transactionId}
-                                    onChange={e => setField('transactionId', e.target.value)} />
-                            </div>
-
-                            <div className="po-group-title">Terms &amp; Declaration Text</div>
-                            <div className="po-field-group">
-                                <label>Terms &amp; Conditions Text</label>
-                                <textarea rows={3} value={order.termsText}
-                                    onChange={e => setField('termsText', e.target.value)} />
-                            </div>
-                            <div className="po-field-group">
-                                <label>Customer Declaration Text</label>
-                                <textarea rows={2} value={order.declarationText}
-                                    onChange={e => setField('declarationText', e.target.value)} />
-                            </div>
-                        </div>
-                    )}
-
-                    {/* ========== COMPANY ========== */}
-                    {activeTab === 'company' && (
-                        <div className="po-section">
-                            <div className="po-section-hdr"><span className="po-section-icon">🏢</span><h3>Company Info</h3></div>
-
-                            {/* LETTERHEAD IMAGE UPLOAD */}
-                            <div className="po-letterhead-upload-box">
-                                <div className="po-letterhead-preview-wrap">
-                                    <img src={letterheadSrc} alt="Letterhead preview" className="po-letterhead-preview-img" />
-                                </div>
-                                <p className="po-hint" style={{ marginTop: 8 }}>
-                                    This image is used as the full header on the printed form.
-                                    Default: <code>letterhead.jpg</code>
-                                </p>
-                                <div className="po-letterhead-btn-row">
+                                    <label>Prefix</label>
                                     <input
-                                        ref={letterheadInputRef}
-                                        type="file"
-                                        accept="image/*"
-                                        style={{ display: 'none' }}
-                                        onChange={handleLetterheadUpload}
+                                        type="text"
+                                        placeholder="e.g. AA, INV, PO-"
+                                        value={serialPrefix}
+                                        onChange={e => setSerialPrefix(e.target.value)}
+                                        maxLength={20}
                                     />
-                                    <button className="po-save-btn"
-                                        onClick={() => letterheadInputRef.current?.click()}>
-                                        📁 Upload Letterhead Image
-                                    </button>
-                                    {letterheadImg && (
-                                        <button className="po-danger-btn" style={{ width: 'auto', margin: 0 }}
-                                            onClick={resetLetterhead}>
-                                            ↺ Reset to Default
-                                        </button>
-                                    )}
                                 </div>
+                                <p className="po-hint" style={{ marginTop: 0 }}>
+                                    Prefix <strong>AA</strong> + range 3–5 → serials <strong>AA3, AA4, AA5</strong>
+                                </p>
                             </div>
 
-                            <div className="po-group-title">Company Details (used in signature section)</div>
-                            <div className="po-field-group">
-                                <label>Company Name</label>
-                                <input type="text" value={company.name} onChange={e => setCoField('name', e.target.value)} />
-                            </div>
-                            <div className="po-field-group">
-                                <label>Tagline</label>
-                                <input type="text" value={company.tagline} onChange={e => setCoField('tagline', e.target.value)} />
-                            </div>
-                            <div className="po-field-group">
-                                <label>Head Office Address (one line per Enter)</label>
-                                <textarea rows={2} value={company.headOffice} onChange={e => setCoField('headOffice', e.target.value)} />
-                            </div>
-                            <div className="po-grid-2">
-                                <div className="po-field-group">
-                                    <label>Phone</label>
-                                    <input type="text" value={company.phone} onChange={e => setCoField('phone', e.target.value)} />
-                                </div>
-                                <div className="po-field-group">
-                                    <label>Email</label>
-                                    <input type="email" value={company.email} onChange={e => setCoField('email', e.target.value)} />
-                                </div>
-                                <div className="po-field-group">
-                                    <label>Website</label>
-                                    <input type="text" value={company.website} onChange={e => setCoField('website', e.target.value)} />
-                                </div>
-                            </div>
-                        </div>
-                    )}
-
-                    {/* ========== DESIGN ========== */}
-                    {activeTab === 'design' && (
-                        <div className="po-section">
-                            <div className="po-section-hdr"><span className="po-section-icon">🎨</span><h3>Design &amp; Settings</h3></div>
-
+                            {/* Print Range */}
                             <div className="po-settings-group">
-                                <div className="po-settings-title">Typography</div>
-                                <div className="po-field-group">
-                                    <label>Font Family</label>
-                                    <select value={settings.fontFamily} onChange={e => setSetting('fontFamily', e.target.value)}>
-                                        {FONT_OPTIONS.map(f => <option key={f}>{f}</option>)}
-                                    </select>
-                                </div>
-                                <div className="po-field-group">
-                                    <label>Base Font Size (px)</label>
-                                    <input type="number" min="9" max="18" value={settings.fontSize}
-                                        onChange={e => setSetting('fontSize', Number(e.target.value))} />
-                                </div>
-                            </div>
-
-                            <div className="po-settings-group">
-                                <div className="po-settings-title">Colors</div>
+                                <div className="po-settings-title">Print Count Range</div>
                                 <div className="po-grid-2">
                                     <div className="po-field-group">
-                                        <label>Heading Color</label>
-                                        <input type="color" value={settings.headingColor}
-                                            onChange={e => setSetting('headingColor', e.target.value)} />
+                                        <label>From</label>
+                                        <input
+                                            type="number"
+                                            placeholder="e.g. 1"
+                                            value={printFrom}
+                                            min="1"
+                                            onChange={e => setPrintFrom(e.target.value)}
+                                        />
                                     </div>
                                     <div className="po-field-group">
-                                        <label>Accent / Link Color</label>
-                                        <input type="color" value={settings.accentColor}
-                                            onChange={e => setSetting('accentColor', e.target.value)} />
-                                    </div>
-                                    <div className="po-field-group">
-                                        <label>Border Color</label>
-                                        <input type="color" value={settings.borderColor}
-                                            onChange={e => setSetting('borderColor', e.target.value)} />
-                                    </div>
-                                    <div className="po-field-group">
-                                        <label>Table Header BG</label>
-                                        <input type="color" value={settings.tableHeaderBg}
-                                            onChange={e => setSetting('tableHeaderBg', e.target.value)} />
+                                        <label>To</label>
+                                        <input
+                                            type="number"
+                                            placeholder="e.g. 10"
+                                            value={printTo}
+                                            min="1"
+                                            onChange={e => setPrintTo(e.target.value)}
+                                        />
                                     </div>
                                 </div>
+                                {printFrom && printTo && parseInt(printFrom) <= parseInt(printTo) && (
+                                    <p className="po-hint" style={{ marginTop: 4 }}>
+                                        Total copies: <strong>{parseInt(printTo) - parseInt(printFrom) + 1}</strong>
+                                    </p>
+                                )}
+                                {printFrom && printTo && parseInt(printFrom) > parseInt(printTo) && (
+                                    <p className="po-hint" style={{ color: 'var(--red)', marginTop: 4 }}>
+                                        ⚠ "From" must be ≤ "To"
+                                    </p>
+                                )}
                             </div>
 
+                            {/* How it works */}
                             <div className="po-settings-group">
-                                <div className="po-settings-title">Page &amp; Print</div>
-                                <div className="po-field-group">
-                                    <label>Paper Size</label>
-                                    <div className="po-radio-group">
-                                        {['A4','Letter'].map(s => (
-                                            <label key={s} className={`po-radio-card${settings.paperSize === s ? ' active' : ''}`}>
-                                                <input type="radio" name="paperSize" value={s}
-                                                    checked={settings.paperSize === s}
-                                                    onChange={() => setSetting('paperSize', s)} />
-                                                {s}
-                                            </label>
-                                        ))}
-                                    </div>
-                                </div>
-                                <div className="po-field-group">
-                                    <label>Print Copies</label>
-                                    <input type="number" min="1" max="20" value={settings.copies}
-                                        onChange={e => setSetting('copies', Number(e.target.value))} />
+                                <div className="po-settings-title">How it works</div>
+                                <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.8 }}>
+                                    <p>① Upload a <strong>.pdf</strong> file.</p>
+                                    <p>② Set <strong>From</strong> and <strong>To</strong> numbers.</p>
+                                    <p>③ Optionally add a <strong>Prefix</strong> (e.g. <em>AA</em>).</p>
+                                    <p>④ Click <strong>Serial Print</strong> — all copies are merged into one PDF; each copy has its serial stamped at the top-left. The browser's PDF viewer opens for printing.</p>
+                                    <p>⑤ Click <strong>Save File</strong> to store it for future sessions.</p>
                                 </div>
                             </div>
-
-                            <div className="po-settings-group">
-                                <div className="po-settings-title">Show / Hide Sections</div>
-                                {[
-                                    ['showTerms',       'Show Terms & Conditions'],
-                                    ['showDeclaration', 'Show Customer Declaration'],
-                                    ['showSignature',   'Show Signature Section'],
-                                ].map(([key, label]) => (
-                                    <label key={key} className="po-toggle-row">
-                                        <input type="checkbox" checked={settings[key]}
-                                            onChange={e => setSetting(key, e.target.checked)} />
-                                        <span>{label}</span>
-                                    </label>
-                                ))}
-                            </div>
-
-                            <button className="po-danger-btn"
-                                onClick={() => { setSettings(DEFAULT_SETTINGS); showToast('Design reset','info'); }}>
-                                ↺ Reset Design to Default
-                            </button>
                         </div>
                     )}
 
-                    {/* ========== SAVED ========== */}
+                    {/* ── Saved Files tab ── */}
                     {activeTab === 'saved' && (
                         <div className="po-section">
-                            <div className="po-section-hdr"><span className="po-section-icon">💾</span><h3>Saved Orders</h3></div>
-                            <p className="po-hint">Save the current form data and load it later.</p>
-
-                            <div className="po-save-row">
-                                <input type="text" placeholder="Order name..."
-                                    value={saveName} onChange={e => setSaveName(e.target.value)}
-                                    onKeyDown={e => e.key === 'Enter' && saveOrder()} />
-                                <button className="po-save-btn" onClick={saveOrder}>Save</button>
+                            <div className="po-section-hdr">
+                                <span className="po-section-icon">💾</span>
+                                <h3>Saved PDF Files</h3>
                             </div>
+                            <p className="po-hint">Files saved here persist across sessions.</p>
 
-                            {saved.length === 0 ? (
-                                <p className="po-empty">No saved orders yet.</p>
+                            {savedFiles.length === 0 ? (
+                                <p className="po-empty">No files saved yet. Upload a PDF and click "Save File".</p>
                             ) : (
                                 <div className="po-saved-list">
-                                    {saved.map(entry => (
+                                    {savedFiles.map(entry => (
                                         <div className="po-saved-card" key={entry.id}>
                                             <div className="po-saved-info">
-                                                <span className="po-saved-name">{entry.name}</span>
+                                                <span className="po-saved-name">📋 {entry.name}</span>
                                                 <span className="po-saved-meta">
-                                                    {entry.order.customerName || '–'} &middot; {entry.order.saleOrderNumber || '–'}
+                                                    {formatSize(entry.size)} · {entry.uploadedAt || ''}
                                                 </span>
                                             </div>
                                             <div className="po-saved-actions">
-                                                <button className="po-load-btn" onClick={() => loadOrder(entry)}>Load</button>
-                                                <button className="po-remove-btn" onClick={() => deleteOrder(entry.id)}>✕</button>
+                                                <button className="po-load-btn" onClick={() => loadSavedFile(entry)}>Load</button>
+                                                <button className="po-remove-btn" onClick={() => deleteSavedFile(entry.id)}>✕</button>
                                             </div>
                                         </div>
                                     ))}
@@ -968,6 +487,11 @@ export default function POForm() {
 
                 </div>
             </div>
+
+            {/* Toast */}
+            {toast && (
+                <div className={`po-toast po-toast--${toast.type}`}>{toast.msg}</div>
+            )}
         </div>
     );
 }

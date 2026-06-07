@@ -720,3 +720,131 @@
     .po-preview-scroll { max-height: none; overflow: visible; box-shadow: none; border-radius: 0; }
     .po-preview-paper { box-shadow: none; }
 }
+
+/* =====================================================
+   UPLOAD DROP ZONE
+   ===================================================== */
+.po-upload-dropzone {
+    width: 100%;
+    flex: 1;
+    min-height: 260px;
+    border: 2.5px dashed var(--border);
+    border-radius: var(--radius-lg);
+    background: var(--surface);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+    position: relative;
+    overflow: hidden;
+}
+.po-upload-dropzone:hover:not(.has-file) {
+    border-color: var(--blue);
+    background: var(--blue-light);
+}
+.po-upload-dropzone.dragging {
+    border-color: var(--blue);
+    background: var(--blue-light);
+    transform: scale(1.01);
+    box-shadow: 0 0 0 4px rgba(37,99,235,0.12);
+}
+.po-upload-dropzone.has-file {
+    border-style: solid;
+    border-color: var(--border);
+    cursor: default;
+    align-items: flex-start;
+    padding: 20px;
+}
+
+/* Idle state */
+.po-dropzone-idle {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    padding: 32px 20px;
+    text-align: center;
+    pointer-events: none;
+}
+.po-dropzone-icon {
+    font-size: 52px;
+    line-height: 1;
+    margin-bottom: 4px;
+    filter: grayscale(0.3);
+}
+.po-dropzone-title {
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--text-primary);
+}
+.po-dropzone-sub {
+    font-size: 13.5px;
+    color: var(--text-secondary);
+}
+.po-link {
+    color: var(--blue);
+    text-decoration: underline;
+    cursor: pointer;
+}
+.po-dropzone-hint {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-top: 4px;
+}
+
+/* File preview inside dropzone */
+.po-file-preview {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    width: 100%;
+}
+.po-file-icon-wrap {
+    font-size: 40px;
+    line-height: 1;
+    flex-shrink: 0;
+}
+.po-file-icon { display: block; }
+.po-file-meta {
+    flex: 1;
+    min-width: 0;
+}
+.po-file-name {
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.po-file-info {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-top: 3px;
+}
+
+/* =====================================================
+   SERIAL PREVIEW BAR
+   ===================================================== */
+.po-serial-preview {
+    width: 100%;
+    background: var(--blue-light);
+    border: 1.5px solid #bfdbfe;
+    border-radius: var(--radius);
+    padding: 8px 14px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+}
+.po-serial-preview-label {
+    color: var(--blue);
+    font-weight: 700;
+    white-space: nowrap;
+}
+.po-serial-preview-value {
+    color: var(--text-primary);
+    font-weight: 600;
+    font-family: monospace;
+    font-size: 13.5px;
+}
