@@ -690,7 +690,7 @@
 /* =====================================================
    RESPONSIVE
    ===================================================== */
-@media screen and (max-width: 1280px) {
+@media screen and (max-width: 1000px) {
     .po-area { flex-direction: column; align-items: center; }
     .po-area-left { position: static; max-height: none; }
     .po-preview-scroll { max-height: 60vh; }
