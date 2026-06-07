@@ -511,7 +511,7 @@ export default function Label() {
                             </div>
                             <div className="label-preview-to" style={{ padding:`2% ${settings.addressPadding}%` }}>
                                 <p className="label-preview-header" style={{ fontSize:`${settings.headingSize}px`, color:settings.headingColor }}>To</p>
-                                <p>{toAddress.map((v,i) => <span key={i}>{v}<br /></span>)}</p>
+                                <p>{toAddress.map((v,i) => <span key={i} style={{fontSize:`${settings.fontSize+2}px`}}>{v}<br /></span>)}</p>
                             </div>
                         </div>
 
